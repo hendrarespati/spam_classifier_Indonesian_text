@@ -1,0 +1,464 @@
+---
+title: "Capstone Project: Simple Spam-Detecting Machine Learning Classifier"
+author: "Hendra"
+date: "June 26, 2018"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: 
+        collapsed: false
+    number_sections: true
+    theme: flatly
+    highlight: tango
+    css: style.css
+  fig_caption: yes
+  pdf_document:
+    latex_engine: xelatex
+    fig_caption: yes
+---
+
+# Background {.tabset}
+
+i want to make to make a Naive Bayesian model that predicts SMS type data to be ham or spam.
+
+
+# Naive Bayes Spam Classifier
+## Data Preparation & Exploratory
+
+
+**Read sms_train dataset**
+
+```{r setup}
+knitr::opts_chunk$set(cache=TRUE)
+options(scipen = 9999)
+```
+
+```{r}
+setwd("C:/Users/Hendra Respati/Documents/Machine learning/CAPSTONE ACADEMY ML/CAPSTONE ACADEMY ML/CLASSIFICATION")
+sms <- read.csv("sms_train.csv", stringsAsFactors = FALSE, encoding = "UTF-8")
+str(sms)
+```
+
+
+
+**Remove variable that have no valuable information and rename first and second variables as "label" and "text"**
+
+```{r}
+library(dplyr)
+sms <- sms %>% 
+  select("label" = STATUS, "text" = CONTAIN) %>% 
+  mutate("label" = as.factor(label))
+
+str(sms)
+```
+
+**Lets check if we had any missing values**
+
+```{r}
+anyNA(sms)
+
+```
+
+
+**I want to  randomly inspect some our message**
+ 
+```{r}
+set.seed(20)
+sms[sample(nrow(sms), 5),"text"]
+
+```
+
+
+
+
+
+## Text Mining
+
+```{r}
+library(tm)
+# convert sms$textt to a corpus vector
+sms.corpus <- VCorpus(VectorSource(sms$text)) 
+sms.corpus[[1]]$content
+```
+
+
+```{r}
+library(tm)
+#before i run code for lower case, i have found  error messages indicating invalid multibyte strings. not all my data are in encoded n UTF-8, so to fix this error i found this code in http://tm.r-forge.r-project.org/faq.html
+sms.corpus <- tm_map(sms.corpus, content_transformer(function(x) iconv(enc2utf8(x), sub = "byte")))
+# so after converted into UTF-8 we can convert the text to lower case 
+sms.corpus <- tm_map(sms.corpus, content_transformer(tolower))
+```
+
+
+```{r}
+library(tm)
+# Create a custom transformer to substitute punctuations with a space " "
+transformer <- content_transformer(function(x, pattern) {
+    gsub(pattern, " ", x)
+   })
+
+# Substitute ".", "/", "@" and common punctuations with a white space
+sms.corpus <- tm_map(sms.corpus, transformer, "/")
+sms.corpus <- tm_map(sms.corpus, transformer, "@")
+sms.corpus <- tm_map(sms.corpus, transformer, "\\.")
+sms.corpus <- tm_map(sms.corpus, transformer, "-")
+
+
+## Remove numbers
+sms.corpus <- tm_map(sms.corpus, removeNumbers)
+
+
+# remove other punctuation
+sms.corpus <- tm_map(sms.corpus, removePunctuation)
+
+```
+
+
+
+
+### Stemming Using Nazief Algorithm
+
+```{r}
+library(tokenizers)
+library(katadasaR)
+stem_katadasaR <- content_transformer(function(x) {
+  paste(sapply(unlist(tokenizers::tokenize_words(x)), katadasaR::katadasaR), collapse = ' ')
+})
+
+sms.corpus<- tm_map(sms.corpus, stem_katadasaR)
+
+```
+
+
+**Applying stemDocument() function to our corpus, and also apply the stripWhitespace treatment**
+```{r}
+# Text stemming
+#library(SnowballC)
+sms.corpus_new <- tm_map(sms.corpus, stemDocument)
+sms.corpus_new <- tm_map(sms.corpus, stripWhitespace)
+
+#lets inspect our final corpus
+sms.corpus_new[[1]]$content
+sms.corpus_new[[2]]$content
+```
+
+
+
+## Wordcloud 
+```{r}
+library(wordcloud)
+library(RColorBrewer)
+wordcloud(words = sms.corpus_new, min.freq = 65, random.order = FALSE, rot.per=0.35, colors=brewer.pal(8, "Dark2"))
+
+```
+
+
+
+
+**Lets do tokenization by transform our corpus into DocumentTermMatrix**
+```{r}
+sms.dtm <- DocumentTermMatrix(sms.corpus_new)
+#Examine our dtm
+inspect(sms.dtm)
+```
+
+
+
+
+
+## Split our data into train and test set
+
+```{r}
+set.seed(150)
+split_75 <- sample(nrow(sms.dtm), nrow(sms.dtm)*0.75)
+sms_train <- sms.dtm[split_75, ]
+sms_test <- sms.dtm[-split_75, ]
+```
+
+
+```{r}
+train_labels <- sms[split_75, 1]
+test_labels <- sms[-split_75, 1]
+```
+
+
+
+**check ham and spam message distribution in train and test set**
+
+```{r}
+prop.table(table(train_labels))
+```
+
+```{r}
+prop.table(table(test_labels))
+```
+
+
+**To reduce noise, we want to train our naive bayes classifier using only words that appear in at least 30 messages**
+
+```{r}
+set.seed(130)
+sms_freq <- findFreqTerms(sms.dtm, 30)
+# take a look at some of the words that will be used as predictors in our classifier:
+sms_freq[sample(length(sms_freq), 10)]
+```
+
+
+
+**subset our DTM to get all the rows (corresponding to documents) but only include columns (terms) where it has appeared in at least 20 messages:**
+
+```{r}
+sms_train <- sms_train[,sms_freq]
+sms_test <- sms_test[,sms_freq]
+```
+
+
+
+**Before we train our classifer, let's convert the numeric values to a simple categorical variable**
+
+```{r}
+# Takes an input, "x" and assign x to a 1 or 0
+bernoulli_conv <- function(x){
+        x <- as.factor(as.numeric(x > 0))
+}
+
+train_bn <- apply(sms_train, 2, bernoulli_conv)
+test_bn <- apply(sms_test, 2, bernoulli_conv)
+```
+
+
+**inspect the train_bn and test_bn**
+
+```{r}
+set.seed(100)
+train_bn[1:6,sample(ncol(train_bn), 10)]
+```
+
+
+```{r}
+head(train_bn[train_bn[,4] == "1" | train_bn[,5] == "1", 1:7])
+```
+
+
+
+**Check if  all the 205 "terms" in our train and test datasets are represented at least once**
+
+```{r}
+ncol(sms_train);ncol(sms_test)
+```
+
+```{r}
+sum(dimnames(sms_train)$Terms == dimnames(sms_test)$Terms)
+```
+
+```{r}
+num_train <- colSums(apply(train_bn, 2, as.numeric))
+num_test <- colSums(apply(test_bn, 2, as.numeric))
+
+num_train[num_train < 3]
+```
+
+```{r}
+num_test[num_test < 3]
+```
+
+
+
+
+
+## Naive Bayes Model  
+
+```{r}
+library(e1071)
+```
+
+```{r}
+spam_model <- naiveBayes(train_bn, train_labels, laplace = 1)
+```
+
+```{r}
+spam_prediction <- predict(spam_model, test_bn)
+```
+
+
+
+
+
+## Result
+
+```{r}
+table(prediction = spam_prediction, actual=test_labels)
+```
+
+
+```{r}
+library(caret)
+conf.mat <- confusionMatrix(spam_prediction, test_labels)
+conf.mat
+```
+
+
+
+
+
+**Inspect our predicition** 
+
+```{r}
+inspect(sms_test[test_labels == "ham" & spam_prediction != test_labels,])
+```
+
+**Terms like "anda","atau","bonus","http", "kuota", "kartu","paket", "registrasi", "ketik". "kirim" from above sample appearing in a sentence seem to be classified as spam**
+
+
+```{r}
+sms[c(1082, 1161, 1226, 1320, 355, 523, 651, 657, 768, 79),2]
+```
+
+
+
+
+
+
+
+# New Dataset
+
+**Read new test dataset**
+
+```{r}
+setwd("C:/Users/Hendra Respati/Documents/Machine learning/CAPSTONE ACADEMY ML/CAPSTONE ACADEMY ML/CLASSIFICATION")
+test <- read.csv("sms_test.csv", stringsAsFactors = FALSE, encoding = "UTF-8")
+str(test)
+```
+
+```{r}
+library(dplyr)
+test <- test %>% 
+  select("text" = CONTAIN)
+
+str(test)
+```
+
+**convert our data to a corpus vector**
+
+```{r}
+sms_test.corpus <- Corpus(VectorSource(test$text)) 
+sms_test.corpus[[1]]$content
+```
+
+
+**ets do data preprocessing for our new test dataset jus ike our train set**
+
+```{r}
+
+#before i run code for lower case, i have found  error messages indicating invalid multibyte strings. not all my data are in encoded n UTF-8, so to fix this error i found this code in http://tm.r-forge.r-project.org/faq.html
+sms_test.corpus <- tm_map(sms_test.corpus, content_transformer(function(x) iconv(enc2utf8(x), sub = "byte")))
+# so after converted into UTF-8 we can convert the text to lower case 
+sms_test.corpus<- tm_map(sms_test.corpus, content_transformer(tolower))
+```
+
+
+```{r}
+
+# Create a custom transformer to substitute punctuations with a space " "
+transformer <- content_transformer(function(x, pattern) {
+    gsub(pattern, " ", x)
+   })
+
+# Substitute ".", "/", "@" and common punctuations with a white space
+sms_test.corpus<- tm_map(sms_test.corpus, transformer, "/")
+sms_test.corpus <- tm_map(sms_test.corpus, transformer, "@")
+sms_test.corpus <- tm_map(sms_test.corpus, transformer, "\\.")
+sms_test.corpus <- tm_map(sms_test.corpus, transformer, "-")
+
+
+## Remove numbers
+sms_test.corpus <- tm_map(sms_test.corpus, removeNumbers)
+
+
+# remove other punctuation
+sms_test.corpus <- tm_map(sms_test.corpus, removePunctuation)
+
+```
+
+
+**Stem word using katadasaR package**
+
+```{r}
+library(tokenizers)
+library(katadasaR)
+stem_katadasaR2 <- content_transformer(function(x) {
+  paste(sapply(unlist(tokenizers::tokenize_words(x)), katadasaR::katadasaR), collapse = ' ')
+})
+
+sms_test.corp <- tm_map(sms_test.corpus, stem_katadasaR2)
+
+```
+
+
+**Applying stemDocument() function to our final corpus, and also apply the stripWhitespace treatment**
+
+
+```{r}
+# Text stemming
+library(SnowballC)
+sms.corpus_final <- tm_map(sms_test.corpus, stemDocument)
+sms.corpus_final <- tm_map(sms_test.corpus, stripWhitespace)
+
+
+
+sms.corpus_final[[1]]$content
+sms.corpus_final[[2]]$content
+```
+
+
+**conver our corpus ito dtm**
+
+```{r}
+sms_test.dtm <- DocumentTermMatrix(sms.corpus_final)
+#Examine our dtm
+inspect(sms_test.dtm)
+```
+
+
+
+```{r}
+
+# Takes an input, "x" and assign x to a 1 or 0
+bernoulli_conv <- function(x){
+        x <- as.factor(as.numeric(x > 0))
+}
+
+
+sms_test_bn <- apply(sms_test.dtm, 2, bernoulli_conv)
+```
+
+
+
+**make new column for predict value from our algorithm in our datset**
+
+```{r}
+test$pred_result <- predict(spam_model, sms_test_bn)
+
+```
+
+```{r}
+str(test)
+```
+
+```{r}
+head(test)
+```
+
+
+
+
+**write don our result into csv**
+```{r}
+write.csv(test, file = "hasilcapstonehendra.csv")
+```
+
+ 
+
+ 
